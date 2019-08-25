@@ -1,0 +1,94 @@
+open Lwt.Infix
+
+let sessions = ref []
+             
+exception Quit
+
+let admins = ref []
+
+let rec send_all sender msg flag =
+  Lwt_list.iter_p (fun (x,y) ->
+      if flag then Lwt_io.fprintl y ("<" ^ sender ^ msg ^ ">")
+      else if x = sender then Lwt.return ()
+       else
+        Lwt_io.fprintl y (sender ^ ": " ^ msg)) !sessions
+
+let remove_session nn =
+  sessions := List.remove_assoc nn !sessions;
+  send_all nn " has left the chat" true >>= fun () ->
+  Lwt.return ()
+
+let handle_error e nn inp outp = match e with
+  | Quit -> Lwt_io.close inp; Lwt_io.close outp; remove_session nn
+  | _ -> remove_session nn
+
+let change_nn nn outp new_nn =
+  (let sec = Lwt_mutex.create () in
+  send_all !nn (" changed nick to " ^ new_nn) true;
+  Lwt_mutex.lock sec;
+  sessions := List.map (fun (x,y) -> if x = !nn then (new_nn,y) else (x,y)) !sessions;
+  admins := List.map (fun x -> if x = !nn then new_nn else x) !admins;
+  nn := new_nn;
+  Lwt_mutex.unlock sec)
+
+let private_message sdr outp msg = Lwt_io.fprintl outp ("<Private> " ^ sdr ^ ": " ^ msg)
+
+let info = "\n Welcome to the chat! \n"
+
+let help = ""         
+
+let kick nm = remove_session nm;
+              send_all nm " got kicked" true >>= fun () ->
+  Lwt.return ()
+
+let add_admin nm = admins := nm::(!admins);
+                 send_all nm " was added to administration" true >>= fun () ->
+  Lwt.return ()
+
+let delete_admin nm = admins := (List.filter (fun x -> x != nm) (!admins));
+                      send_all nm " was removed from administration" true >>= fun () ->
+  Lwt.return ()
+            
+let rec handle_login nr (inp,outp) =
+  let mute = Lwt_mutex.create () in
+  Lwt_io.fprint outp "Enter initial nick: "
+  >>= (fun () -> (Lwt_io.read_line inp))
+  >>= fun l ->
+  if List.exists (fun (x,y) -> x = l) !sessions then Lwt_io.fprintl outp "The name has already been taken \n" >>= (fun () -> handle_login nr (inp,outp))
+  else if String.length l < 1 then Lwt_io.fprintl outp "Name cannot be that short \n" >>= (fun () -> handle_login nr (inp,outp)) else 
+    (Lwt.return (nr := l);
+    Lwt_mutex.lock mute;
+    (if !sessions = [] then admins := !nr::(!admins) else admins := !admins);
+    (sessions := (!nr,outp)::(!sessions));
+    Lwt_mutex.unlock mute;
+    (Lwt_io.fprintl outp info);
+    send_all !nr " has joined the chat" true)
+
+let handle_input nr outp l = match (Str.string_before l 2) with
+  | "/q" -> Lwt.fail Quit
+  | "/l" -> Lwt_list.iter_s (fun (x,y) -> Lwt_io.fprintl outp x) !sessions;
+  | "/h" -> (Lwt_io.fprintl outp info)
+  | "/p" -> let i = (String.trim (Str.string_after l 2)) in
+            let p = (String.trim (Str.string_before i (String.index i '|'))) in
+             if List.exists (fun (x,y) -> x = p) !sessions then
+                                                               (let s = (String.trim (Str.string_after i ((String.index i '|')+1))) in
+                                                               private_message !nr (List.assoc p !sessions) s) else Lwt_io.fprintl outp "*** Invalid input ***"
+          
+  | "/k" -> if List.mem !nr !admins then
+              (let m = (String.trim (Str.string_after l 2)) in if List.exists (fun (x,y) -> x = m) !sessions then kick m else Lwt_io.fprintl outp "*** Invalid name ***")
+            else Lwt_io.fprintl outp "*** Permission Denied ***"
+  | "/a" -> if List.mem !nr !admins then
+              (let k = (String.trim (Str.string_after l 2)) in if List.exists (fun (x,y) -> x = k) !sessions then add_admin k else Lwt_io.fprintl outp "*** Invalid name ***")
+            else Lwt_io.fprintl outp "*** Permission Denied ***"
+  | "/d" -> if List.mem !nr !admins then
+              (let d = (String.trim (Str.string_after l 2)) in if List.exists (fun (x,y) -> x = d) !sessions then delete_admin d else Lwt_io.fprintl outp "*** Invalid name ***")
+            else Lwt_io.fprintl outp "*** Permission Denied ***"
+  | "/n" -> let n = (String.trim (Str.string_after l 2)) in if String.length n < 1 then Lwt_io.fprintl outp "*** Invalid name ***" else Lwt.return (change_nn nr outp n)
+  | _ -> send_all !nr l false
+
+let chat_server _ (inp,outp) =
+  let nick = ref "" in
+  let login = handle_login nick (inp,outp) in
+  let rec main_loop () =
+	  Lwt_io.read_line inp >>= handle_input nick outp >>= main_loop in
+  Lwt.catch (fun () -> login >>= main_loop) (fun e -> handle_error e !nick inp outp)
