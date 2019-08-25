@@ -1,0 +1,56 @@
+(* Bloom Filter implementation.  This file will not compile as is. *)
+module type memset = sig
+    type elt (* type of values stored in the set *)
+    type t (* abstract type used to represent a set *)
+    val mem : elt -> t -> bool
+    val empty : t
+    val is_empty : t -> bool
+    val add : elt -> t -> t
+    val from_list : elt list -> t
+    val union : t -> t -> t
+    val inter : t -> t -> t
+  end
+
+module type hasher = sig
+    type t
+    val hashes : t -> int list
+  end
+
+module SparseSet = Set.Make(
+    struct
+    let compare = Pervasives.compare
+    type t = int
+    let from_list lst = List.fold_left (+) 0 lst (* ??? What to do with this one? *)  
+  end )                     
+                   
+(* Define the hasher signature here *)
+
+(* Define SparseSet module here, using the Set.Make functor *)
+
+(* Fill in the implementation of the memset signature here.  You'll need to expose the elt type *)
+module BoolSet = struct
+    (* element-wise or of two arrays: *)
+    let rec (|@) s1 s2 = let (short,long) =
+      if (Array.length s1 < Array.length s2) then (s1,s2) else (s2,s1) in
+      Array.mapi (fun i li -> if i < (Array.length short) then li || short.(i) else li) long
+  end
+
+(* Fill in the implementation of a Bloom.Filter, matching the memset signature, here. *)
+(* You will need to add some sharing constraints to the signature below. *)
+module Filter(S : memset)(H : hasher) : memset = struct
+    type elt = H.t
+    type t = S.t
+    (* Implement the memset signature: *)
+  end
+
+(* A hashparam module for strings... *)
+module StringHash = struct
+    type t = string (* I hash values of type string *)
+    let hlen = 15
+    let mask = (1 lsl hlen) - 1
+    let hashes s =
+      let rec hlist n h = if n = 0 then [] else (h land mask)::(hlist (n-1) (h lsr hlen)) in
+      hlist 4 (Hashtbl.hash s)
+  end
+
+(* Add the IntHash module here *)
